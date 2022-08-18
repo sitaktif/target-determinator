@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aristanetworks/goarista/path"
 	"github.com/bazel-contrib/target-determinator/common"
@@ -578,7 +579,7 @@ func doQueryDeps(context *Context, targets TargetsList) (*QueryResults, error) {
 		return nil, fmt.Errorf("failed to parse cquery result: %w", err)
 	}
 
-	matchingTargetResults, err := runToCqueryResult(context, targets.String())
+	matchingTargetResults, err := runToCqueryResultWithDebug(context, targets.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to run top-level cquery: %w", err)
 	}
@@ -624,6 +625,39 @@ func runToCqueryResult(context *Context, pattern string) (*analysis.CqueryResult
 	returnVal, err := context.BazelCmd.Execute(
 		BazelCmdConfig{Dir: context.WorkspacePath, Stdout: &stdout, Stderr: &stderr},
 		"--output_base", context.BazelOutputBase, "cquery", "--output=proto", pattern)
+
+	if returnVal != 0 || err != nil {
+		return nil, fmt.Errorf("failed to run cquery on %s: %w. Stderr:\n%v", pattern, err, stderr.String())
+	}
+
+	content := stdout.Bytes()
+
+	var result analysis.CqueryResult
+	if err := proto.Unmarshal(content, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal cquery stdout: %w", err)
+	}
+	return &result, nil
+}
+
+func runToCqueryResultWithDebug(context *Context, pattern string) (*analysis.CqueryResult, error) {
+	log.Printf("Running cquery on %s", pattern)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	ts := time.Now().Unix()
+	tmpDir := fmt.Sprintf("/tmp/bazel-trace-%v/", ts)
+	err := os.MkdirAll(tmpDir, 0755)
+	if err != nil {
+		return nil, err
+	}
+
+	returnVal, err := context.BazelCmd.Execute(
+		BazelCmdConfig{Dir: context.WorkspacePath, Stdout: &stdout, Stderr: &stderr},
+		"--output_base", context.BazelOutputBase, "cquery", "--output=proto", pattern,
+		"--experimental_repository_resolved_file="+tmpDir+"/repos_resolved_file",
+		"--profile="+tmpDir+"/profile",
+		"--explain="+tmpDir+"/explain",
+	)
 
 	if returnVal != 0 || err != nil {
 		return nil, fmt.Errorf("failed to run cquery on %s: %w. Stderr:\n%v", pattern, err, stderr.String())
