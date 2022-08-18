@@ -35,6 +35,11 @@ type config struct {
 }
 
 func main() {
+	log.Print("!DEV VERSION!")
+	log.Print("!           !")
+	log.Print("!           !")
+	log.Print("!     !     !")
+
 	start := time.Now()
 	defer func() { log.Printf("Finished after %v", time.Since(start)) }()
 
