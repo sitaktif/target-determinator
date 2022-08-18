@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aristanetworks/goarista/path"
 	"github.com/bazel-contrib/target-determinator/common"
@@ -556,7 +557,7 @@ func bazelInfo(workingDirectory string, bazelCmd BazelCmd, key string) (string, 
 		"info", key)
 
 	if result != 0 || err != nil {
-		return "", fmt.Errorf("failed to get the Bazel %v: %w. Stderr:\n%v", key, err, stderrBuf.String())
+		return "", fmt.Errorf("failed to get the Bazel %v: %w. Stderr:\n%v\nStdout:%v\n", key, err, stderrBuf.String(), stdoutBuf.String())
 	}
 	return strings.TrimRight(stdoutBuf.String(), "\n"), nil
 }
@@ -578,7 +579,7 @@ func doQueryDeps(context *Context, targets TargetsList) (*QueryResults, error) {
 		return nil, fmt.Errorf("failed to parse cquery result: %w", err)
 	}
 
-	matchingTargetResults, err := runToCqueryResult(context, targets.String())
+	matchingTargetResults, err := runToCqueryResultWithDebug(context, targets.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to run top-level cquery: %w", err)
 	}
@@ -624,6 +625,41 @@ func runToCqueryResult(context *Context, pattern string) (*analysis.CqueryResult
 	returnVal, err := context.BazelCmd.Execute(
 		BazelCmdConfig{Dir: context.WorkspacePath, Stdout: &stdout, Stderr: &stderr},
 		"--output_base", context.BazelOutputBase, "cquery", "--output=proto", pattern)
+
+	if returnVal != 0 || err != nil {
+		return nil, fmt.Errorf("failed to run cquery on %s: %w. Stderr:\n%v", pattern, err, stderr.String())
+	}
+
+	content := stdout.Bytes()
+
+	var result analysis.CqueryResult
+	if err := proto.Unmarshal(content, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal cquery stdout: %w", err)
+	}
+	return &result, nil
+}
+
+func runToCqueryResultWithDebug(context *Context, pattern string) (*analysis.CqueryResult, error) {
+	log.Printf("Running cquery on %s", pattern)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	ts := time.Now().Unix()
+	traceDir := fmt.Sprintf("%v/.cicd/bazel-trace-%v", context.WorkspacePath, ts)
+	err := os.MkdirAll(traceDir, 0755)
+	if err != nil {
+		return nil, err
+	}
+
+	returnVal, err := context.BazelCmd.Execute(
+		BazelCmdConfig{Dir: context.WorkspacePath, Stdout: &stdout, Stderr: &stderr},
+		"--output_base", context.BazelOutputBase, "cquery", "--output=proto", pattern,
+		"--experimental_repository_resolved_file="+traceDir+"/repos_resolved_file",
+		"--profile="+traceDir+"/profile",
+		"--explain="+traceDir+"/explain",
+		"--verbose_explanations",
+		"--announce_rc",
+	)
 
 	if returnVal != 0 || err != nil {
 		return nil, fmt.Errorf("failed to run cquery on %s: %w. Stderr:\n%v", pattern, err, stderr.String())
