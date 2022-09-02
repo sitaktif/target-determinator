@@ -562,12 +562,19 @@ func bazelInfo(workingDirectory string, bazelCmd BazelCmd, key string) (string, 
 	return strings.TrimRight(stdoutBuf.String(), "\n"), nil
 }
 
+func printEnv() {
+	log.Printf("%v", os.Environ())
+}
+
 func doQueryDeps(context *Context, targets TargetsList) (*QueryResults, error) {
 	bazelRelease, err := BazelRelease(context.WorkspacePath, context.BazelCmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve the bazel release: %w", err)
 	}
 
+	printEnv()
+
+	log.Println("Running the regular 'deps(kind(....))' query")
 	depsPattern := fmt.Sprintf("deps(%s)", targets.String())
 	transitiveResult, err := runToCqueryResult(context, depsPattern)
 	if err != nil {
@@ -579,10 +586,40 @@ func doQueryDeps(context *Context, targets TargetsList) (*QueryResults, error) {
 		return nil, fmt.Errorf("failed to parse cquery result: %w", err)
 	}
 
-	matchingTargetResults, err := runToCqueryResultWithDebug(context, targets.String())
+	printEnv()
+
+	log.Println("Running the regular 'kind(....)' query")
+	matchingTargetResults, err := runToCqueryResult(context, targets.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to run top-level cquery: %w", err)
 	}
+
+	printEnv()
+
+	log.Println("Running the regular 'kind(....)' query again just to see")
+	_, err = runToCqueryResult(context, targets.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to run top-level cquery: %w", err)
+	}
+
+	printEnv()
+
+	log.Println("Running the with-debug 'kind(....)' query")
+	_, err = runToCqueryResultWithDebug(context, targets.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to run top-level cquery: %w", err)
+	}
+
+	printEnv()
+
+	log.Println("Running the with-debug 'kind(....)' query again")
+	_, err = runToCqueryResultWithDebug(context, targets.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to run top-level cquery: %w", err)
+	}
+
+	// We just want to do some debugging. Exit early.
+	os.Exit(42)
 
 	log.Println("Matching labels to configurations")
 	labels := make([]label.Label, 0)
@@ -622,13 +659,19 @@ func runToCqueryResult(context *Context, pattern string) (*analysis.CqueryResult
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
+	args := []string{
+		"--output_base", context.BazelOutputBase, "cquery", "--output=proto", pattern,
+	}
+
 	returnVal, err := context.BazelCmd.Execute(
 		BazelCmdConfig{Dir: context.WorkspacePath, Stdout: &stdout, Stderr: &stderr},
-		"--output_base", context.BazelOutputBase, "cquery", "--output=proto", pattern)
+		args...)
 
 	if returnVal != 0 || err != nil {
 		return nil, fmt.Errorf("failed to run cquery on %s: %w. Stderr:\n%v", pattern, err, stderr.String())
 	}
+
+	log.Printf("DEBUG: runToCqueryResult cquery output for %s (cmd: %v). Stderr:\n%v", pattern, args, stderr.String())
 
 	content := stdout.Bytes()
 
@@ -651,17 +694,25 @@ func runToCqueryResultWithDebug(context *Context, pattern string) (*analysis.Cqu
 		return nil, err
 	}
 
-	returnVal, err := context.BazelCmd.Execute(
-		BazelCmdConfig{Dir: context.WorkspacePath, Stdout: &stdout, Stderr: &stderr},
+	timestamp := time.Now().Unix()
+
+	args := []string{
 		"--output_base", context.BazelOutputBase, "cquery", "--output=proto", pattern,
-		"--experimental_repository_resolved_file="+traceDir+"/repos_resolved_file",
-		"--profile="+traceDir+"/profile",
-		"--explain="+traceDir+"/explain",
+		fmt.Sprintf("--experimental_repository_resolved_file=%v/repos_resolved_file-%v", traceDir, timestamp),
+		fmt.Sprintf("--profile=%v/profile-%v", traceDir, timestamp),
+		fmt.Sprintf("--explain=%v/explain-%v", traceDir, timestamp),
 		"--verbose_explanations",
 		"--announce_rc",
+		"--curses=no",
+		"--color=no",
+	}
+
+	returnVal, err := context.BazelCmd.Execute(
+		BazelCmdConfig{Dir: context.WorkspacePath, Stdout: &stdout, Stderr: &stderr},
+		args...,
 	)
 
-	log.Printf("DEBUG: cquery output for %s. Stdout: \n%v, Stderr:\n%v", pattern, stdout.String(), stderr.String())
+	log.Printf("DEBUG: runToCqueryResultWithDebug cquery output for %s (cmd: %v). Stderr:\n%v", pattern, args, stderr.String())
 
 	if returnVal != 0 || err != nil {
 		return nil, fmt.Errorf("failed to run cquery on %s: %w. Stderr:\n%v", pattern, err, stderr.String())
